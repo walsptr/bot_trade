@@ -68,6 +68,13 @@ Catatan:
 
 ### Strategy – Trend, Momentum, Volatility
 
+#### Timeframes
+
+| Variable | Tipe | Default | Fungsi |
+|---|---:|---:|---|
+| `ENTRY_TIMEFRAME` | str | `M5` | Timeframe utama untuk entry/eksekusi signal (rates utama yang diproses strategi). Contoh: `M5`, `M15`, `H1`. |
+| `TREND_TIMEFRAME` | str | `M15` | Timeframe untuk trend filter (EMA + slope gate). Contoh: `M15`, `H1`. |
+
 #### EMA Trend
 
 | Variable | Tipe | Default | Fungsi |
@@ -133,7 +140,7 @@ Catatan:
 | Variable | Tipe | Default | Fungsi |
 |---|---:|---:|---|
 | `MAGIC` | int | `20260602` | Magic number untuk membedakan posisi bot vs manual/EA lain. |
-| `BARS` | int | `200` | Jumlah bar yang diambil untuk hitung indikator (M5). |
+| `BARS` | int | `200` | Jumlah bar yang diambil untuk hitung indikator pada `ENTRY_TIMEFRAME`. |
 | `POLL_INTERVAL_SECONDS` | float | `1.0` | Interval polling (deteksi candle baru). |
 
 ### Backtest

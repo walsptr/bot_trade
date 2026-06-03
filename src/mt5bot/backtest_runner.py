@@ -26,6 +26,35 @@ from .strategy_triple import (
 STOP_OUT_PCT: float = 0.50
 
 
+def _timeframe(tf: str) -> Tuple[int, int, str]:
+    v = (tf or "").strip().upper()
+    m = {
+        "M1": (mt5.TIMEFRAME_M1, 60),
+        "M2": (mt5.TIMEFRAME_M2, 2 * 60),
+        "M3": (mt5.TIMEFRAME_M3, 3 * 60),
+        "M4": (mt5.TIMEFRAME_M4, 4 * 60),
+        "M5": (mt5.TIMEFRAME_M5, 5 * 60),
+        "M6": (mt5.TIMEFRAME_M6, 6 * 60),
+        "M10": (mt5.TIMEFRAME_M10, 10 * 60),
+        "M12": (mt5.TIMEFRAME_M12, 12 * 60),
+        "M15": (mt5.TIMEFRAME_M15, 15 * 60),
+        "M20": (mt5.TIMEFRAME_M20, 20 * 60),
+        "M30": (mt5.TIMEFRAME_M30, 30 * 60),
+        "H1": (mt5.TIMEFRAME_H1, 60 * 60),
+        "H2": (mt5.TIMEFRAME_H2, 2 * 60 * 60),
+        "H3": (mt5.TIMEFRAME_H3, 3 * 60 * 60),
+        "H4": (mt5.TIMEFRAME_H4, 4 * 60 * 60),
+        "H6": (mt5.TIMEFRAME_H6, 6 * 60 * 60),
+        "H8": (mt5.TIMEFRAME_H8, 8 * 60 * 60),
+        "H12": (mt5.TIMEFRAME_H12, 12 * 60 * 60),
+        "D1": (mt5.TIMEFRAME_D1, 24 * 60 * 60),
+    }
+    if v not in m:
+        raise ValueError(f"Unsupported timeframe: {tf}")
+    const, seconds = m[v]
+    return int(const), int(seconds), v
+
+
 @dataclass
 class Position:
     side: str
@@ -174,7 +203,10 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
     symbol = client.connect(cfg.mt5, logger)
 
     try:
-        rates = client.copy_rates_range(symbol, mt5.TIMEFRAME_M5, start_dt, end_dt)
+        entry_tf_const, entry_tf_seconds, entry_tf_label = _timeframe(cfg.strategy.entry_timeframe)
+        trend_tf_const, trend_tf_seconds, trend_tf_label = _timeframe(cfg.strategy.trend_timeframe)
+
+        rates = client.copy_rates_range(symbol, entry_tf_const, start_dt, end_dt)
         min_bars = min_bars_required(
             ema_trend_period=int(cfg.strategy.ema_trend),
             stoch_period=int(cfg.strategy.stoch_period),
@@ -190,7 +222,7 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
             raise RuntimeError(f"Bars tidak cukup: butuh >= {int(min_bars)}, dapat {len(rates)}")
 
         ticks = get_ticks_range_per_day(client, symbol, start_dt, end_dt, logger)
-        candle_tick_map, ticks_fallback_count, candle_spreads = build_candle_tick_map(rates, ticks, 5 * 60)
+        candle_tick_map, ticks_fallback_count, candle_spreads = build_candle_tick_map(rates, ticks, int(entry_tf_seconds))
         cs = client.contract_size(symbol)
 
         spread_min = min(candle_spreads) if candle_spreads else None
@@ -198,9 +230,11 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
         spread_avg = (sum(candle_spreads) / len(candle_spreads)) if candle_spreads else None
 
         logger.info(
-            "Backtest params mode=%s symbol=%s timeframe=M5 start=%s end=%s leverage=1:%s contract_size=%.2f ticks=%s candle_spread_min=%.8f candle_spread_avg=%.8f candle_spread_max=%.8f",
+            "Backtest params mode=%s symbol=%s entry_tf=%s trend_tf=%s start=%s end=%s leverage=1:%s contract_size=%.2f ticks=%s candle_spread_min=%.8f candle_spread_avg=%.8f candle_spread_max=%.8f",
             cfg.mode,
             symbol,
+            entry_tf_label,
+            trend_tf_label,
             cfg.backtest.start_date,
             cfg.backtest.end_date,
             cfg.backtest.leverage,
@@ -227,25 +261,26 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
         rsi = rsi_wilder(closes, cfg.strategy.rsi_period)
         atr = atr_wilder(highs, lows, closes, cfg.strategy.atr_period)
 
-        m15_start_dt = start_dt - timedelta(days=3)
-        m15_rates = client.copy_rates_range(symbol, mt5.TIMEFRAME_M15, m15_start_dt, end_dt)
-        m15_times = [int(r["time"]) for r in m15_rates]
-        m15_closes = [float(r["close"]) for r in m15_rates]
-        m15_ema = ema_series(m15_closes, cfg.strategy.ema_trend)
+        trend_bars = max(int(cfg.strategy.ema_trend) + 10, 200)
+        trend_start_dt = start_dt - timedelta(seconds=int(trend_bars) * int(trend_tf_seconds))
+        trend_rates = client.copy_rates_range(symbol, trend_tf_const, trend_start_dt, end_dt)
+        trend_times = [int(r["time"]) for r in trend_rates]
+        trend_closes = [float(r["close"]) for r in trend_rates]
+        trend_ema = ema_series(trend_closes, cfg.strategy.ema_trend)
 
         trend_m15_close: List[float] = []
         trend_m15_ema: List[float] = []
         j = -1
         for bar in rates:
-            m5_close_time = int(bar["time"]) + (5 * 60)
-            while (j + 1) < len(m15_times) and (int(m15_times[j + 1]) + (15 * 60)) <= int(m5_close_time):
+            entry_close_time = int(bar["time"]) + int(entry_tf_seconds)
+            while (j + 1) < len(trend_times) and (int(trend_times[j + 1]) + int(trend_tf_seconds)) <= int(entry_close_time):
                 j += 1
             if j >= 0:
-                trend_m15_close.append(float(m15_closes[j]))
-                trend_m15_ema.append(float(m15_ema[j]))
+                trend_m15_close.append(float(trend_closes[j]))
+                trend_m15_ema.append(float(trend_ema[j]))
             else:
-                trend_m15_close.append(float(m15_closes[0]))
-                trend_m15_ema.append(float(m15_ema[0]))
+                trend_m15_close.append(float(trend_closes[0]))
+                trend_m15_ema.append(float(trend_ema[0]))
 
         balance = float(cfg.backtest.initial_balance)
         equity_curve: List[float] = [balance]

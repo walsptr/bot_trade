@@ -13,6 +13,35 @@ from .risk_manager import calculate_lot
 from .strategy_triple import calculate_triple_signal
 
 
+def _timeframe(tf: str) -> Tuple[int, int, str]:
+    v = (tf or "").strip().upper()
+    m = {
+        "M1": (mt5.TIMEFRAME_M1, 60),
+        "M2": (mt5.TIMEFRAME_M2, 2 * 60),
+        "M3": (mt5.TIMEFRAME_M3, 3 * 60),
+        "M4": (mt5.TIMEFRAME_M4, 4 * 60),
+        "M5": (mt5.TIMEFRAME_M5, 5 * 60),
+        "M6": (mt5.TIMEFRAME_M6, 6 * 60),
+        "M10": (mt5.TIMEFRAME_M10, 10 * 60),
+        "M12": (mt5.TIMEFRAME_M12, 12 * 60),
+        "M15": (mt5.TIMEFRAME_M15, 15 * 60),
+        "M20": (mt5.TIMEFRAME_M20, 20 * 60),
+        "M30": (mt5.TIMEFRAME_M30, 30 * 60),
+        "H1": (mt5.TIMEFRAME_H1, 60 * 60),
+        "H2": (mt5.TIMEFRAME_H2, 2 * 60 * 60),
+        "H3": (mt5.TIMEFRAME_H3, 3 * 60 * 60),
+        "H4": (mt5.TIMEFRAME_H4, 4 * 60 * 60),
+        "H6": (mt5.TIMEFRAME_H6, 6 * 60 * 60),
+        "H8": (mt5.TIMEFRAME_H8, 8 * 60 * 60),
+        "H12": (mt5.TIMEFRAME_H12, 12 * 60 * 60),
+        "D1": (mt5.TIMEFRAME_D1, 24 * 60 * 60),
+    }
+    if v not in m:
+        raise ValueError(f"Unsupported timeframe: {tf}")
+    const, seconds = m[v]
+    return int(const), int(seconds), v
+
+
 def setup_logging(text_log_path: str) -> logging.Logger:
     os.makedirs(os.path.dirname(text_log_path), exist_ok=True)
 
@@ -111,17 +140,21 @@ def run_live(cfg: AppConfig) -> None:
     run_once = (os.getenv("RUN_ONCE") or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
     last_seen_bar_time: Optional[int] = None
+    entry_tf_const, _, entry_tf_label = _timeframe(cfg.strategy.entry_timeframe)
+    trend_tf_const, _, trend_tf_label = _timeframe(cfg.strategy.trend_timeframe)
     logger.info(
-        "Bot started. mode=%s symbol=%s timeframe=M5 magic=%s",
+        "Bot started. mode=%s symbol=%s entry_tf=%s trend_tf=%s magic=%s",
         cfg.mode,
         symbol,
+        entry_tf_label,
+        trend_tf_label,
         cfg.live.magic,
     )
 
     try:
         while True:
             try:
-                rates = client.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, int(cfg.live.bars))
+                rates = client.copy_rates_from_pos(symbol, entry_tf_const, 0, int(cfg.live.bars))
                 current_bar_time = int(rates[-1]["time"])
             except Exception as e:
                 logger.error("copy_rates_from_pos error: %s", e)
@@ -148,7 +181,7 @@ def run_live(cfg: AppConfig) -> None:
 
             try:
                 m15_bars = max(int(cfg.strategy.ema_trend) + 10, 200)
-                m15_rates = client.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, int(m15_bars))
+                m15_rates = client.copy_rates_from_pos(symbol, trend_tf_const, 0, int(m15_bars))
                 sig = calculate_triple_signal(
                     rates,
                     trend_rates_m15=m15_rates,
@@ -229,7 +262,8 @@ def run_live(cfg: AppConfig) -> None:
             order_ticket: str = ""
 
             logger.info(
-                "NEW_M5 bar_time=%s signal=%s ema_trend=%.5f stoch(k=%.2f,d=%.2f) macd_hist=%.5f rsi=%.2f atr=%.5f spread=%.5f pos=%s filter=%s",
+                "NEW_%s bar_time=%s signal=%s ema_trend=%.5f stoch(k=%.2f,d=%.2f) macd_hist=%.5f rsi=%.2f atr=%.5f spread=%.5f pos=%s filter=%s",
+                entry_tf_label,
                 sig.bar_time_current,
                 sig.signal,
                 float(sig.ema_trend),
@@ -445,7 +479,7 @@ def run_live(cfg: AppConfig) -> None:
                 [
                     ts_local,
                     symbol,
-                    "M5",
+                    entry_tf_label,
                     str(sig.bar_time_current),
                     str(sig.bar_time_closed),
                     f"{float(sig.ema_trend):.2f}",

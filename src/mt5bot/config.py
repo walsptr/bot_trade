@@ -43,6 +43,8 @@ class MT5Config:
 
 @dataclass(frozen=True)
 class StrategyConfig:
+    entry_timeframe: str = "M5"
+    trend_timeframe: str = "M15"
     ema_trend: int = 50
     stoch_period: int = 5
     stoch_smooth_k: int = 3
@@ -120,6 +122,8 @@ def load_config(project_root: Path, mode: str) -> AppConfig:
     )
 
     spread_max = _env_float("SPREAD_MAX")
+    entry_timeframe = _env_str("ENTRY_TIMEFRAME")
+    trend_timeframe = _env_str("TREND_TIMEFRAME")
     ema_trend = _env_int("EMA_TREND")
     stoch_period = _env_int("STOCH_PERIOD")
     stoch_smooth_k = _env_int("STOCH_SMOOTH_K")
@@ -150,6 +154,8 @@ def load_config(project_root: Path, mode: str) -> AppConfig:
     session_start_london_wib = _env_int("SESSION_START_LONDON_WIB")
     session_end_ny_wib = _env_int("SESSION_END_NY_WIB")
     strategy = StrategyConfig(
+        entry_timeframe=str(entry_timeframe) if entry_timeframe is not None else StrategyConfig.entry_timeframe,
+        trend_timeframe=str(trend_timeframe) if trend_timeframe is not None else StrategyConfig.trend_timeframe,
         ema_trend=int(ema_trend) if ema_trend is not None else StrategyConfig.ema_trend,
         stoch_period=int(stoch_period) if stoch_period is not None else StrategyConfig.stoch_period,
         stoch_smooth_k=int(stoch_smooth_k) if stoch_smooth_k is not None else StrategyConfig.stoch_smooth_k,
