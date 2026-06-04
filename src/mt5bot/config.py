@@ -45,6 +45,14 @@ class MT5Config:
 class StrategyConfig:
     entry_timeframe: str = "M5"
     trend_timeframe: str = "M15"
+    entry_model: str = "CANDLE_ATR"
+    breakout_lookback: int = 20
+    breakout_max_age: int = 12
+    retest_atr_tolerance: float = 0.30
+    retest_max_distance_atr: float = 2.00
+    followthrough_range_atr: float = 0.80
+    followthrough_body_ratio: float = 0.50
+    followthrough_max_distance_atr: float = 2.00
     ema_trend: int = 50
     stoch_period: int = 5
     stoch_smooth_k: int = 3
@@ -87,6 +95,7 @@ class LiveConfig:
     magic: int = 20260602
     bars: int = 200
     poll_interval_seconds: float = 1.0
+    stop_out_pct: float = 0.50
     log_dir: Path = Path("logs")
     text_log_filename: str = "bot.log"
     decisions_csv_filename: str = "decisions.csv"
@@ -98,6 +107,7 @@ class BacktestConfig:
     end_date: str = "2026-06-01"
     initial_balance: float = 50.0
     leverage: int = 2000
+    stop_out_pct: float = 0.50
     log_dir: Path = Path("logs")
 
 
@@ -124,6 +134,14 @@ def load_config(project_root: Path, mode: str) -> AppConfig:
     spread_max = _env_float("SPREAD_MAX")
     entry_timeframe = _env_str("ENTRY_TIMEFRAME")
     trend_timeframe = _env_str("TREND_TIMEFRAME")
+    entry_model = _env_str("ENTRY_MODEL")
+    breakout_lookback = _env_int("BREAKOUT_LOOKBACK")
+    breakout_max_age = _env_int("BREAKOUT_MAX_AGE")
+    retest_atr_tolerance = _env_float("RETEST_ATR_TOLERANCE")
+    retest_max_distance_atr = _env_float("RETEST_MAX_DISTANCE_ATR")
+    followthrough_range_atr = _env_float("FOLLOWTHROUGH_RANGE_ATR")
+    followthrough_body_ratio = _env_float("FOLLOWTHROUGH_BODY_RATIO")
+    followthrough_max_distance_atr = _env_float("FOLLOWTHROUGH_MAX_DISTANCE_ATR")
     ema_trend = _env_int("EMA_TREND")
     stoch_period = _env_int("STOCH_PERIOD")
     stoch_smooth_k = _env_int("STOCH_SMOOTH_K")
@@ -156,6 +174,14 @@ def load_config(project_root: Path, mode: str) -> AppConfig:
     strategy = StrategyConfig(
         entry_timeframe=str(entry_timeframe) if entry_timeframe is not None else StrategyConfig.entry_timeframe,
         trend_timeframe=str(trend_timeframe) if trend_timeframe is not None else StrategyConfig.trend_timeframe,
+        entry_model=str(entry_model) if entry_model is not None else StrategyConfig.entry_model,
+        breakout_lookback=int(breakout_lookback) if breakout_lookback is not None else StrategyConfig.breakout_lookback,
+        breakout_max_age=int(breakout_max_age) if breakout_max_age is not None else StrategyConfig.breakout_max_age,
+        retest_atr_tolerance=float(retest_atr_tolerance) if retest_atr_tolerance is not None else StrategyConfig.retest_atr_tolerance,
+        retest_max_distance_atr=float(retest_max_distance_atr) if retest_max_distance_atr is not None else StrategyConfig.retest_max_distance_atr,
+        followthrough_range_atr=float(followthrough_range_atr) if followthrough_range_atr is not None else StrategyConfig.followthrough_range_atr,
+        followthrough_body_ratio=float(followthrough_body_ratio) if followthrough_body_ratio is not None else StrategyConfig.followthrough_body_ratio,
+        followthrough_max_distance_atr=float(followthrough_max_distance_atr) if followthrough_max_distance_atr is not None else StrategyConfig.followthrough_max_distance_atr,
         ema_trend=int(ema_trend) if ema_trend is not None else StrategyConfig.ema_trend,
         stoch_period=int(stoch_period) if stoch_period is not None else StrategyConfig.stoch_period,
         stoch_smooth_k=int(stoch_smooth_k) if stoch_smooth_k is not None else StrategyConfig.stoch_smooth_k,
@@ -191,10 +217,12 @@ def load_config(project_root: Path, mode: str) -> AppConfig:
     magic = _env_int("MAGIC")
     bars = _env_int("BARS")
     poll = _env_float("POLL_INTERVAL_SECONDS")
+    stop_out_pct = _env_float("STOP_OUT_PCT")
     live = LiveConfig(
         magic=int(magic) if magic is not None else LiveConfig.magic,
         bars=int(bars) if bars is not None else LiveConfig.bars,
         poll_interval_seconds=float(poll) if poll is not None else LiveConfig.poll_interval_seconds,
+        stop_out_pct=float(stop_out_pct) if stop_out_pct is not None else LiveConfig.stop_out_pct,
         log_dir=project_root / "logs",
         text_log_filename=LiveConfig.text_log_filename,
         decisions_csv_filename=LiveConfig.decisions_csv_filename,
@@ -209,6 +237,7 @@ def load_config(project_root: Path, mode: str) -> AppConfig:
         end_date=bt_end or BacktestConfig.end_date,
         initial_balance=float(bt_balance) if bt_balance is not None else BacktestConfig.initial_balance,
         leverage=int(bt_leverage) if bt_leverage is not None else BacktestConfig.leverage,
+        stop_out_pct=float(stop_out_pct) if stop_out_pct is not None else BacktestConfig.stop_out_pct,
         log_dir=project_root / "logs",
     )
 

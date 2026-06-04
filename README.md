@@ -75,6 +75,19 @@ Catatan:
 | `ENTRY_TIMEFRAME` | str | `M5` | Timeframe utama untuk entry/eksekusi signal (rates utama yang diproses strategi). Contoh: `M5`, `M15`, `H1`. |
 | `TREND_TIMEFRAME` | str | `M15` | Timeframe untuk trend filter (EMA + slope gate). Contoh: `M15`, `H1`. |
 
+#### Entry Model
+
+| Variable | Tipe | Default | Fungsi |
+|---|---:|---:|---|
+| `ENTRY_MODEL` | str | `CANDLE_ATR` | Pilih model entry: `CANDLE_ATR`, `BREAKOUT_RETEST`, atau `BREAKOUT_FOLLOWTHROUGH`. |
+| `BREAKOUT_LOOKBACK` | int | `20` | Untuk `BREAKOUT_RETEST`: range lookback (jumlah candle) untuk menentukan level breakout (highest high / lowest low sebelumnya). |
+| `BREAKOUT_MAX_AGE` | int | `12` | Untuk `BREAKOUT_RETEST`: breakout harus terjadi dalam N candle terakhir sebelum retest (membatasi “terlalu lama”). |
+| `RETEST_ATR_TOLERANCE` | float | `0.30` | Untuk `BREAKOUT_RETEST`: toleransi retest terhadap level breakout dalam satuan ATR (mis. 0.30 berarti boleh “nyentuh” level ±0.30*ATR). |
+| `RETEST_MAX_DISTANCE_ATR` | float | `2.00` | Untuk `BREAKOUT_RETEST`: batas maksimum jarak close dari level breakout (menghindari entry yang sudah terlalu jauh). |
+| `FOLLOWTHROUGH_RANGE_ATR` | float | `0.80` | Untuk `BREAKOUT_FOLLOWTHROUGH`: minimal range candle follow-through dalam satuan ATR (semakin besar → makin selektif). |
+| `FOLLOWTHROUGH_BODY_RATIO` | float | `0.50` | Untuk `BREAKOUT_FOLLOWTHROUGH`: minimal rasio body terhadap range pada candle follow-through. |
+| `FOLLOWTHROUGH_MAX_DISTANCE_ATR` | float | `2.00` | Untuk `BREAKOUT_FOLLOWTHROUGH`: batas maksimum jarak close dari level breakout (menghindari entry yang sudah terlalu jauh). |
+
 #### EMA Trend
 
 | Variable | Tipe | Default | Fungsi |

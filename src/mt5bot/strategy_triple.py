@@ -268,6 +268,9 @@ def candle_body_ok(bar: Dict[str, Any], ratio: float) -> bool:
 
 def min_bars_required(
     *,
+    entry_model: str,
+    breakout_lookback: int,
+    breakout_max_age: int,
     ema_trend_period: int,
     stoch_period: int,
     stoch_smooth_k: int,
@@ -279,7 +282,14 @@ def min_bars_required(
     extra: int = 10,
 ) -> int:
     """Hitung kebutuhan minimum bars untuk sinyal dan filter (plus buffer)."""
+    entry_model = (entry_model or "").strip().upper()
+    breakout_need = 0
+    if entry_model == "BREAKOUT_RETEST":
+        breakout_need = int(breakout_lookback) + int(breakout_max_age) + 3
+    elif entry_model == "BREAKOUT_FOLLOWTHROUGH":
+        breakout_need = int(breakout_lookback) + 3
     base = max(
+        int(breakout_need),
         int(ema_trend_period),
         int(stoch_period) + int(stoch_smooth_k) + int(stoch_smooth_d),
         int(macd_slow) + int(macd_signal),
@@ -288,6 +298,159 @@ def min_bars_required(
         5,
     )
     return int(base) + int(extra)
+
+
+def _entry_breakout_retest(
+    *,
+    rates: Sequence[Dict[str, Any]],
+    idx_curr: int,
+    trend: str,
+    atr_value: float,
+    breakout_lookback: int,
+    breakout_max_age: int,
+    retest_atr_tolerance: float,
+    retest_max_distance_atr: float,
+) -> str:
+    if trend not in ("BUY", "SELL"):
+        return "NONE"
+    lb = int(breakout_lookback)
+    age = int(breakout_max_age)
+    if lb <= 1 or age <= 0:
+        return "NONE"
+    if idx_curr < (lb + 2):
+        return "NONE"
+    tol = max(float(retest_atr_tolerance), 0.0) * float(atr_value)
+    max_dist = max(float(retest_max_distance_atr), 0.0) * float(atr_value)
+
+    highs = [float(r["high"]) for r in rates]
+    lows = [float(r["low"]) for r in rates]
+    closes = [float(r["close"]) for r in rates]
+    opens = [float(r["open"]) for r in rates]
+
+    start_j = max(lb, idx_curr - int(age))
+    breakout_idx = -1
+    level = 0.0
+    for j in range(idx_curr - 1, start_j - 1, -1):
+        if trend == "BUY":
+            prev_high = max(highs[j - lb : j])
+            if closes[j] > float(prev_high) and closes[j] > opens[j]:
+                breakout_idx = j
+                level = float(prev_high)
+                break
+        else:
+            prev_low = min(lows[j - lb : j])
+            if closes[j] < float(prev_low) and closes[j] < opens[j]:
+                breakout_idx = j
+                level = float(prev_low)
+                break
+
+    if breakout_idx < 0:
+        return "NONE"
+
+    o = float(opens[idx_curr])
+    c = float(closes[idx_curr])
+    h = float(highs[idx_curr])
+    l = float(lows[idx_curr])
+
+    if trend == "BUY":
+        if c <= float(level):
+            return "NONE"
+        if l > float(level) + float(tol):
+            return "NONE"
+        if float(max_dist) > 0.0 and c > float(level) + float(max_dist):
+            return "NONE"
+        if c <= o:
+            return "NONE"
+        return "BUY"
+
+    if c >= float(level):
+        return "NONE"
+    if h < float(level) - float(tol):
+        return "NONE"
+    if float(max_dist) > 0.0 and c < float(level) - float(max_dist):
+        return "NONE"
+    if c >= o:
+        return "NONE"
+    return "SELL"
+
+
+def _entry_breakout_followthrough(
+    *,
+    rates: Sequence[Dict[str, Any]],
+    idx_curr: int,
+    trend: str,
+    atr_value: float,
+    breakout_lookback: int,
+    followthrough_range_atr: float,
+    followthrough_body_ratio: float,
+    followthrough_max_distance_atr: float,
+) -> str:
+    if trend not in ("BUY", "SELL"):
+        return "NONE"
+    lb = int(breakout_lookback)
+    if lb <= 1:
+        return "NONE"
+    if idx_curr < (lb + 2):
+        return "NONE"
+
+    highs = [float(r["high"]) for r in rates]
+    lows = [float(r["low"]) for r in rates]
+    closes = [float(r["close"]) for r in rates]
+    opens = [float(r["open"]) for r in rates]
+
+    idx_break = int(idx_curr) - 1
+    if idx_break < lb:
+        return "NONE"
+
+    level = 0.0
+    if trend == "BUY":
+        prev_high = max(highs[idx_break - lb : idx_break])
+        if not (float(closes[idx_break]) > float(prev_high) and float(closes[idx_break]) > float(opens[idx_break])):
+            return "NONE"
+        level = float(prev_high)
+    else:
+        prev_low = min(lows[idx_break - lb : idx_break])
+        if not (float(closes[idx_break]) < float(prev_low) and float(closes[idx_break]) < float(opens[idx_break])):
+            return "NONE"
+        level = float(prev_low)
+
+    o = float(opens[idx_curr])
+    c = float(closes[idx_curr])
+    h = float(highs[idx_curr])
+    l = float(lows[idx_curr])
+    rng = float(h) - float(l)
+    if rng <= 0.0:
+        return "NONE"
+
+    body_ratio = float(abs(c - o) / rng)
+    if body_ratio < float(followthrough_body_ratio):
+        return "NONE"
+
+    if float(atr_value) > 0.0 and float(rng) < float(followthrough_range_atr) * float(atr_value):
+        return "NONE"
+
+    max_dist = max(float(followthrough_max_distance_atr), 0.0) * float(atr_value)
+
+    if trend == "BUY":
+        if c <= o:
+            return "NONE"
+        if c <= float(level):
+            return "NONE"
+        if float(max_dist) > 0.0 and c > float(level) + float(max_dist):
+            return "NONE"
+        if c <= float(closes[idx_break]):
+            return "NONE"
+        return "BUY"
+
+    if c >= o:
+        return "NONE"
+    if c >= float(level):
+        return "NONE"
+    if float(max_dist) > 0.0 and c < float(level) - float(max_dist):
+        return "NONE"
+    if c >= float(closes[idx_break]):
+        return "NONE"
+    return "SELL"
 
 
 def _apply_filters(
@@ -348,6 +511,14 @@ def calculate_triple_signal(
     rates: Sequence[Dict[str, Any]],
     *,
     trend_rates_m15: Sequence[Dict[str, Any]],
+    entry_model: str,
+    breakout_lookback: int,
+    breakout_max_age: int,
+    retest_atr_tolerance: float,
+    retest_max_distance_atr: float,
+    followthrough_range_atr: float,
+    followthrough_body_ratio: float,
+    followthrough_max_distance_atr: float,
     ema_trend_period: int,
     stoch_period: int,
     stoch_smooth_k: int,
@@ -374,6 +545,9 @@ def calculate_triple_signal(
 ) -> TripleSignal:
     """Hitung sinyal Triple Confirmation pada event candle baru (mengacu candle closed terakhir)."""
     min_bars = min_bars_required(
+        entry_model=str(entry_model),
+        breakout_lookback=int(breakout_lookback),
+        breakout_max_age=int(breakout_max_age),
         ema_trend_period=int(ema_trend_period),
         stoch_period=int(stoch_period),
         stoch_smooth_k=int(stoch_smooth_k),
@@ -429,16 +603,40 @@ def calculate_triple_signal(
 
     signal = "NONE"
     closed_bar = dict(rates[-2])
-    rng = float(closed_bar["high"]) - float(closed_bar["low"])
-    range_ok = float(atr_value) > 0.0 and rng >= float(atr_entry_multiplier) * float(atr_value)
-    candle_dir = "NONE"
-    if float(closed_bar["close"]) > float(closed_bar["open"]):
-        candle_dir = "BUY"
-    elif float(closed_bar["close"]) < float(closed_bar["open"]):
-        candle_dir = "SELL"
+    entry_model_u = (str(entry_model) or "").strip().upper()
+    if entry_model_u == "BREAKOUT_RETEST":
+        signal = _entry_breakout_retest(
+            rates=rates,
+            idx_curr=idx_curr,
+            trend=str(trend),
+            atr_value=float(atr_value),
+            breakout_lookback=int(breakout_lookback),
+            breakout_max_age=int(breakout_max_age),
+            retest_atr_tolerance=float(retest_atr_tolerance),
+            retest_max_distance_atr=float(retest_max_distance_atr),
+        )
+    elif entry_model_u == "BREAKOUT_FOLLOWTHROUGH":
+        signal = _entry_breakout_followthrough(
+            rates=rates,
+            idx_curr=idx_curr,
+            trend=str(trend),
+            atr_value=float(atr_value),
+            breakout_lookback=int(breakout_lookback),
+            followthrough_range_atr=float(followthrough_range_atr),
+            followthrough_body_ratio=float(followthrough_body_ratio),
+            followthrough_max_distance_atr=float(followthrough_max_distance_atr),
+        )
+    else:
+        rng = float(closed_bar["high"]) - float(closed_bar["low"])
+        range_ok = float(atr_value) > 0.0 and rng >= float(atr_entry_multiplier) * float(atr_value)
+        candle_dir = "NONE"
+        if float(closed_bar["close"]) > float(closed_bar["open"]):
+            candle_dir = "BUY"
+        elif float(closed_bar["close"]) < float(closed_bar["open"]):
+            candle_dir = "SELL"
 
-    if trend in ("BUY", "SELL") and candle_dir == trend and range_ok:
-        signal = trend
+        if trend in ("BUY", "SELL") and candle_dir == trend and range_ok:
+            signal = trend
 
     bar_time_current = int(rates[-1]["time"])
     bar_time_closed = int(rates[-2]["time"])
@@ -486,6 +684,14 @@ def calculate_triple_signal_at_index(
     atr: Sequence[float],
     trend_m15_close: Sequence[float],
     trend_m15_ema: Sequence[float],
+    entry_model: str,
+    breakout_lookback: int,
+    breakout_max_age: int,
+    retest_atr_tolerance: float,
+    retest_max_distance_atr: float,
+    followthrough_range_atr: float,
+    followthrough_body_ratio: float,
+    followthrough_max_distance_atr: float,
     atr_entry_multiplier: float,
     rsi_buy_max: float,
     rsi_sell_min: float,
@@ -523,16 +729,40 @@ def calculate_triple_signal_at_index(
 
     signal = "NONE"
     closed_bar = dict(rates[i - 1])
-    rng = float(closed_bar["high"]) - float(closed_bar["low"])
-    range_ok = float(atr_value) > 0.0 and rng >= float(atr_entry_multiplier) * float(atr_value)
-    candle_dir = "NONE"
-    if float(closed_bar["close"]) > float(closed_bar["open"]):
-        candle_dir = "BUY"
-    elif float(closed_bar["close"]) < float(closed_bar["open"]):
-        candle_dir = "SELL"
+    entry_model_u = (str(entry_model) or "").strip().upper()
+    if entry_model_u == "BREAKOUT_RETEST":
+        signal = _entry_breakout_retest(
+            rates=rates,
+            idx_curr=int(idx_curr),
+            trend=str(trend),
+            atr_value=float(atr_value),
+            breakout_lookback=int(breakout_lookback),
+            breakout_max_age=int(breakout_max_age),
+            retest_atr_tolerance=float(retest_atr_tolerance),
+            retest_max_distance_atr=float(retest_max_distance_atr),
+        )
+    elif entry_model_u == "BREAKOUT_FOLLOWTHROUGH":
+        signal = _entry_breakout_followthrough(
+            rates=rates,
+            idx_curr=int(idx_curr),
+            trend=str(trend),
+            atr_value=float(atr_value),
+            breakout_lookback=int(breakout_lookback),
+            followthrough_range_atr=float(followthrough_range_atr),
+            followthrough_body_ratio=float(followthrough_body_ratio),
+            followthrough_max_distance_atr=float(followthrough_max_distance_atr),
+        )
+    else:
+        rng = float(closed_bar["high"]) - float(closed_bar["low"])
+        range_ok = float(atr_value) > 0.0 and rng >= float(atr_entry_multiplier) * float(atr_value)
+        candle_dir = "NONE"
+        if float(closed_bar["close"]) > float(closed_bar["open"]):
+            candle_dir = "BUY"
+        elif float(closed_bar["close"]) < float(closed_bar["open"]):
+            candle_dir = "SELL"
 
-    if trend in ("BUY", "SELL") and candle_dir == trend and range_ok:
-        signal = trend
+        if trend in ("BUY", "SELL") and candle_dir == trend and range_ok:
+            signal = trend
 
     bar_time_current = int(rates[i]["time"])
     bar_time_closed = int(rates[i - 1]["time"])

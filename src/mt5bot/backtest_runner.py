@@ -23,9 +23,6 @@ from .strategy_triple import (
 )
 
 
-STOP_OUT_PCT: float = 0.50
-
-
 def _timeframe(tf: str) -> Tuple[int, int, str]:
     v = (tf or "").strip().upper()
     m = {
@@ -108,6 +105,61 @@ def write_csv(path: str, header: Sequence[str], rows: Sequence[Sequence[Any]]) -
 
 def parse_date(s: str) -> datetime:
     return datetime.strptime(s, "%Y-%m-%d")
+
+
+def build_monthly_trade_summary_rows(trades: Sequence[Sequence[Any]]) -> List[List[Any]]:
+    monthly: Dict[str, Dict[str, Any]] = {}
+    for r in trades:
+        if len(r) < 10:
+            continue
+        close_time_s = str(r[1])
+        pnl = float(r[8])
+        balance_after = float(r[9])
+        balance_before = balance_after - pnl
+
+        close_dt = datetime.strptime(close_time_s, "%Y-%m-%d %H:%M:%S")
+        month_key = close_dt.strftime("%Y-%m")
+
+        m = monthly.get(month_key)
+        if m is None:
+            m = {
+                "start_balance": balance_before,
+                "end_balance": balance_after,
+                "net_pnl": 0.0,
+                "trades": 0,
+                "wins": 0,
+            }
+            monthly[month_key] = m
+
+        m["end_balance"] = balance_after
+        m["net_pnl"] = float(m["net_pnl"]) + pnl
+        m["trades"] = int(m["trades"]) + 1
+        if pnl > 0:
+            m["wins"] = int(m["wins"]) + 1
+
+    out: List[List[Any]] = []
+    for month_key in sorted(monthly.keys()):
+        m = monthly[month_key]
+        trades_count = int(m["trades"])
+        wins_count = int(m["wins"])
+        win_rate = (float(wins_count) / float(trades_count) * 100.0) if trades_count > 0 else 0.0
+        out.append(
+            [
+                month_key,
+                f"{float(m['start_balance']):.2f}",
+                f"{float(m['end_balance']):.2f}",
+                f"{float(m['net_pnl']):.2f}",
+                trades_count,
+                f"{float(win_rate):.2f}",
+            ]
+        )
+    return out
+
+
+def _required_margin(entry: float, lot: float, contract_size: float, leverage: int) -> float:
+    lev = int(leverage) if int(leverage) > 0 else 1
+    v = (float(entry) * float(lot) * float(contract_size)) / float(lev)
+    return float(v) if v > 0.0 else 0.0
 
 
 def max_drawdown(equity_points: Sequence[float]) -> float:
@@ -208,6 +260,9 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
 
         rates = client.copy_rates_range(symbol, entry_tf_const, start_dt, end_dt)
         min_bars = min_bars_required(
+            entry_model=str(cfg.strategy.entry_model),
+            breakout_lookback=int(cfg.strategy.breakout_lookback),
+            breakout_max_age=int(cfg.strategy.breakout_max_age),
             ema_trend_period=int(cfg.strategy.ema_trend),
             stoch_period=int(cfg.strategy.stoch_period),
             stoch_smooth_k=int(cfg.strategy.stoch_smooth_k),
@@ -356,7 +411,7 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
             else:
                 current_equity = balance
 
-            stop_out_level = float(cfg.backtest.initial_balance) * float(STOP_OUT_PCT)
+            stop_out_level = float(cfg.backtest.initial_balance) * float(cfg.backtest.stop_out_pct)
             if float(current_equity) <= float(stop_out_level):
                 atr_value = float(atr[i - 1]) if 0 <= (i - 1) < len(atr) else (float(pos.atr) if pos is not None else 0.0)
                 if pos is not None:
@@ -414,6 +469,14 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
                 atr=atr,
                 trend_m15_close=trend_m15_close,
                 trend_m15_ema=trend_m15_ema,
+                entry_model=cfg.strategy.entry_model,
+                breakout_lookback=cfg.strategy.breakout_lookback,
+                breakout_max_age=cfg.strategy.breakout_max_age,
+                retest_atr_tolerance=cfg.strategy.retest_atr_tolerance,
+                retest_max_distance_atr=cfg.strategy.retest_max_distance_atr,
+                followthrough_range_atr=cfg.strategy.followthrough_range_atr,
+                followthrough_body_ratio=cfg.strategy.followthrough_body_ratio,
+                followthrough_max_distance_atr=cfg.strategy.followthrough_max_distance_atr,
                 atr_entry_multiplier=cfg.strategy.atr_entry_multiplier,
                 rsi_buy_max=cfg.strategy.rsi_buy_max,
                 rsi_sell_min=cfg.strategy.rsi_sell_min,
@@ -439,6 +502,13 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
             atr_value = float(sig.atr)
             sl_dist = float(cfg.strategy.atr_sl_multiplier) * atr_value
             tp_dist = float(cfg.strategy.atr_tp_multiplier) * atr_value
+            if sl_dist <= 0.0:
+                if signal == "BUY":
+                    sl_dist = float(cfg.strategy.buy_sl_distance)
+                    tp_dist = float(cfg.strategy.buy_tp_distance)
+                elif signal == "SELL":
+                    sl_dist = float(cfg.strategy.sell_sl_distance)
+                    tp_dist = float(cfg.strategy.sell_tp_distance)
 
             if pos is not None:
                 if pos.side == "BUY" and signal == "SELL":
@@ -484,7 +554,7 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
                             contract_size=cs,
                         )
                         leverage = int(cfg.backtest.leverage) if int(cfg.backtest.leverage) > 0 else 1
-                        required_margin = (float(entry) * float(cfg.strategy.min_lot) * float(cs)) / float(leverage)
+                        required_margin = _required_margin(entry=entry, lot=lot, contract_size=cs, leverage=leverage)
                         if float(balance) < float(required_margin):
                             logger.warning("SKIP_NO_MARGIN balance=%.2f required=%.2f", float(balance), float(required_margin))
                             entries_skipped_margin += 1
@@ -550,7 +620,7 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
                             contract_size=cs,
                         )
                         leverage = int(cfg.backtest.leverage) if int(cfg.backtest.leverage) > 0 else 1
-                        required_margin = (float(entry) * float(cfg.strategy.min_lot) * float(cs)) / float(leverage)
+                        required_margin = _required_margin(entry=entry, lot=lot, contract_size=cs, leverage=leverage)
                         if float(balance) < float(required_margin):
                             logger.warning("SKIP_NO_MARGIN balance=%.2f required=%.2f", float(balance), float(required_margin))
                             entries_skipped_margin += 1
@@ -588,7 +658,7 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
                             contract_size=cs,
                         )
                         leverage = int(cfg.backtest.leverage) if int(cfg.backtest.leverage) > 0 else 1
-                        required_margin = (float(entry) * float(cfg.strategy.min_lot) * float(cs)) / float(leverage)
+                        required_margin = _required_margin(entry=entry, lot=lot, contract_size=cs, leverage=leverage)
                         if float(balance) < float(required_margin):
                             logger.warning("SKIP_NO_MARGIN balance=%.2f required=%.2f", float(balance), float(required_margin))
                             entries_skipped_margin += 1
@@ -621,7 +691,7 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
                             contract_size=cs,
                         )
                         leverage = int(cfg.backtest.leverage) if int(cfg.backtest.leverage) > 0 else 1
-                        required_margin = (float(entry) * float(cfg.strategy.min_lot) * float(cs)) / float(leverage)
+                        required_margin = _required_margin(entry=entry, lot=lot, contract_size=cs, leverage=leverage)
                         if float(balance) < float(required_margin):
                             logger.warning("SKIP_NO_MARGIN balance=%.2f required=%.2f", float(balance), float(required_margin))
                             entries_skipped_margin += 1
@@ -762,7 +832,7 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
         summary: Dict[str, Any] = {
             "mode": cfg.mode,
             "symbol": symbol,
-            "timeframe": "M5",
+            "timeframe": entry_tf_label,
             "start_date": cfg.backtest.start_date,
             "end_date": cfg.backtest.end_date,
             "bars": len(rates),
@@ -776,7 +846,8 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
             "entries_skipped_margin": entries_skipped_margin,
             "filter_rejection_counts": filter_counts,
             "stop_out_triggered": stop_out_triggered,
-            "stop_out_level": round(float(cfg.backtest.initial_balance) * float(STOP_OUT_PCT), 2),
+            "stop_out_pct": round(float(cfg.backtest.stop_out_pct), 4),
+            "stop_out_level": round(float(cfg.backtest.initial_balance) * float(cfg.backtest.stop_out_pct), 2),
             "spread_min": float(f"{spread_min:.8f}") if spread_min is not None else None,
             "spread_avg": float(f"{spread_avg:.8f}") if spread_avg is not None else None,
             "spread_max": float(f"{spread_max:.8f}") if spread_max is not None else None,
@@ -798,6 +869,9 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
             logger.info("FILTER_REJECT %s: %s bars", reason, count)
 
         trades_path = os.fspath(cfg.backtest.log_dir / f"backtest_trades_{cfg.backtest.start_date}_{cfg.backtest.end_date}.csv")
+        monthly_path = os.fspath(
+            cfg.backtest.log_dir / f"backtest_monthly_summary_{cfg.backtest.start_date}_{cfg.backtest.end_date}.csv"
+        )
         summary_path = os.fspath(cfg.backtest.log_dir / f"backtest_summary_{cfg.backtest.start_date}_{cfg.backtest.end_date}.json")
 
         header = [
@@ -824,11 +898,16 @@ def run_backtest(cfg: AppConfig) -> Dict[str, Any]:
         ]
         write_csv(trades_path, header, trades)
 
+        monthly_header = ["Bulan", "Start balance", "End balance", "Net PnL", "Trades", "Win rate"]
+        monthly_rows = build_monthly_trade_summary_rows(trades)
+        write_csv(monthly_path, monthly_header, monthly_rows)
+
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
         logger.info("Backtest done. trades=%s final_balance=%.2f", total, balance)
         logger.info("Output trades=%s", trades_path)
+        logger.info("Output monthly=%s", monthly_path)
         logger.info("Output summary=%s", summary_path)
         return summary
     finally:

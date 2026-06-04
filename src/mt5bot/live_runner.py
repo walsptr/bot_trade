@@ -150,6 +150,21 @@ def run_live(cfg: AppConfig) -> None:
         trend_tf_label,
         cfg.live.magic,
     )
+    start_equity = 0.0
+    stop_out_level = 0.0
+    if float(cfg.live.stop_out_pct) > 0.0:
+        info = mt5.account_info()
+        if info is not None:
+            start_equity = float(getattr(info, "equity", 0.0))
+            stop_out_level = float(start_equity) * float(cfg.live.stop_out_pct)
+            logger.info(
+                "LIVE_STOP_OUT start_equity=%.2f stop_out_pct=%.4f stop_out_level=%.2f",
+                float(start_equity),
+                float(cfg.live.stop_out_pct),
+                float(stop_out_level),
+            )
+        else:
+            logger.warning("LIVE_STOP_OUT disabled: account_info unavailable")
 
     try:
         while True:
@@ -179,12 +194,73 @@ def run_live(cfg: AppConfig) -> None:
             last_seen_bar_time = current_bar_time
             ts_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+            if float(cfg.live.stop_out_pct) > 0.0 and float(start_equity) > 0.0:
+                info = mt5.account_info()
+                if info is not None:
+                    current_equity = float(getattr(info, "equity", 0.0))
+                    if float(current_equity) <= float(stop_out_level):
+                        position = client.positions_get_bot(symbol, cfg.live.magic)
+                        pos_state, pos_ticket, pos_vol = _position_state(position)
+                        closed_ok = False
+                        if position is not None:
+                            closed_ok = client.close_position(
+                                logger,
+                                position,
+                                deviation_points=cfg.strategy.deviation_points,
+                                magic=cfg.live.magic,
+                                comment="STOP_OUT",
+                            )
+                        logger.warning(
+                            "LIVE_STOP_OUT_TRIGGER equity=%.2f level=%.2f position=%s closed=%s — bot berhenti",
+                            float(current_equity),
+                            float(stop_out_level),
+                            pos_state,
+                            str(closed_ok),
+                        )
+                        append_csv_row(
+                            csv_log_path,
+                            [
+                                ts_local,
+                                symbol,
+                                entry_tf_label,
+                                str(current_bar_time),
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "STOP_OUT",
+                                "",
+                                "",
+                                "",
+                                pos_state,
+                                pos_ticket,
+                                pos_vol,
+                                "STOP_OUT_CLOSE_AND_STOP",
+                                "",
+                                f"equity={current_equity:.2f} level={stop_out_level:.2f} closed={closed_ok}",
+                                "",
+                            ],
+                        )
+                        break
+
             try:
                 m15_bars = max(int(cfg.strategy.ema_trend) + 10, 200)
                 m15_rates = client.copy_rates_from_pos(symbol, trend_tf_const, 0, int(m15_bars))
                 sig = calculate_triple_signal(
                     rates,
                     trend_rates_m15=m15_rates,
+                    entry_model=cfg.strategy.entry_model,
+                    breakout_lookback=cfg.strategy.breakout_lookback,
+                    breakout_max_age=cfg.strategy.breakout_max_age,
+                    retest_atr_tolerance=cfg.strategy.retest_atr_tolerance,
+                    retest_max_distance_atr=cfg.strategy.retest_max_distance_atr,
+                    followthrough_range_atr=cfg.strategy.followthrough_range_atr,
+                    followthrough_body_ratio=cfg.strategy.followthrough_body_ratio,
+                    followthrough_max_distance_atr=cfg.strategy.followthrough_max_distance_atr,
                     ema_trend_period=cfg.strategy.ema_trend,
                     stoch_period=cfg.strategy.stoch_period,
                     stoch_smooth_k=cfg.strategy.stoch_smooth_k,
@@ -216,7 +292,7 @@ def run_live(cfg: AppConfig) -> None:
                     [
                         ts_local,
                         symbol,
-                        "M5",
+                        entry_tf_label,
                         current_bar_time,
                         "",
                         "",
