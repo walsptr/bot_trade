@@ -10,6 +10,7 @@ from .config import MT5Config
 class MT5Client:
     def __init__(self) -> None:
         self._connected = False
+        self._filling_mode_by_symbol: Dict[str, int] = {}
 
     def connect(self, cfg: MT5Config, logger) -> str:
         if cfg.login is None or cfg.password is None or cfg.server is None:
@@ -122,6 +123,66 @@ class MT5Client:
                 return p
         return None
 
+    def _invalid_fill_retcode(self) -> int:
+        return int(getattr(mt5, "TRADE_RETCODE_INVALID_FILL", 10030))
+
+    def _candidate_filling_modes(self, symbol: str) -> List[int]:
+        info = mt5.symbol_info(symbol)
+        modes: List[int] = []
+        if info is not None:
+            fm = getattr(info, "filling_mode", None)
+            if fm is not None:
+                try:
+                    modes.append(int(fm))
+                except Exception:
+                    pass
+
+        for m in (mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK):
+            if int(m) not in modes:
+                modes.append(int(m))
+        return modes
+
+    def _resolve_filling_mode(self, symbol: str) -> int:
+        cached = self._filling_mode_by_symbol.get(str(symbol))
+        if cached is not None:
+            return int(cached)
+        modes = self._candidate_filling_modes(symbol)
+        return int(modes[0]) if modes else int(mt5.ORDER_FILLING_IOC)
+
+    def _order_send_with_filling_fallback(self, logger, request: Dict[str, Any]) -> Optional[Any]:
+        symbol = str(request.get("symbol", ""))
+        if not symbol:
+            result = mt5.order_send(request)
+            if result is None:
+                logger.error("order_send None: %s", mt5.last_error())
+            return result
+
+        candidates = self._candidate_filling_modes(symbol)
+        cached = self._filling_mode_by_symbol.get(symbol)
+        if cached is not None and int(cached) in candidates:
+            candidates = [int(cached)] + [m for m in candidates if int(m) != int(cached)]
+
+        invalid_fill = self._invalid_fill_retcode()
+        last_result = None
+        for fill in candidates:
+            req = dict(request)
+            req["type_filling"] = int(fill)
+            result = mt5.order_send(req)
+            last_result = result
+            if result is None:
+                logger.error("order_send None: %s", mt5.last_error())
+                return None
+
+            ret = int(getattr(result, "retcode", -1))
+            if ret == mt5.TRADE_RETCODE_DONE:
+                self._filling_mode_by_symbol[symbol] = int(fill)
+                return result
+            if ret == int(invalid_fill):
+                continue
+            return result
+
+        return last_result
+
     def close_position(self, logger, position, *, deviation_points: int, magic: int, comment: str) -> bool:
         symbol = str(position.symbol)
         volume = float(position.volume)
@@ -149,19 +210,19 @@ class MT5Client:
             "type_time": mt5.ORDER_TIME_GTC,
         }
 
-        result = mt5.order_send(request)
+        result = self._order_send_with_filling_fallback(logger, request)
         if result is None:
-            logger.error("close_position order_send None: %s", mt5.last_error())
             return False
 
         ok = int(getattr(result, "retcode", -1)) == mt5.TRADE_RETCODE_DONE
         logger.info(
-            "CLOSE ticket=%s type=%s vol=%.2f retcode=%s comment=%s",
+            "CLOSE ticket=%s type=%s vol=%.2f retcode=%s comment=%s filling=%s",
             ticket,
             "BUY" if pos_type == mt5.POSITION_TYPE_BUY else "SELL",
             volume,
             getattr(result, "retcode", None),
             getattr(result, "comment", ""),
+            self._filling_mode_by_symbol.get(symbol),
         )
         return ok
 
@@ -178,7 +239,6 @@ class MT5Client:
         magic: int,
         comment: str,
     ) -> Tuple[bool, Optional[Any]]:
-        info = self.symbol_info(symbol)
         tick = self.symbol_tick(symbol)
 
         direction = direction.upper().strip()
@@ -203,17 +263,15 @@ class MT5Client:
             "magic": int(magic),
             "comment": str(comment),
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": int(getattr(info, "filling_mode", mt5.ORDER_FILLING_IOC)),
         }
 
-        result = mt5.order_send(request)
+        result = self._order_send_with_filling_fallback(logger, request)
         if result is None:
-            logger.error("send_order order_send None: %s", mt5.last_error())
             return False, None
 
         ok = int(getattr(result, "retcode", -1)) == mt5.TRADE_RETCODE_DONE
         logger.info(
-            "OPEN %s lot=%.2f price=%.5f sl=%.5f tp=%.5f retcode=%s comment=%s",
+            "OPEN %s lot=%.2f price=%.5f sl=%.5f tp=%.5f retcode=%s comment=%s filling=%s",
             direction,
             float(lot),
             float(request["price"]),
@@ -221,6 +279,7 @@ class MT5Client:
             float(request["tp"]),
             getattr(result, "retcode", None),
             getattr(result, "comment", ""),
+            self._filling_mode_by_symbol.get(symbol),
         )
         return ok, result
 
